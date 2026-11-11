@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>서술형 연습 · 교사</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="top"><div class="wrap wide">
+  <span class="logo">🔥 서술형 연습 · 교사</span>
+  <select id="classSel" aria-label="반 선택"></select>
+  <button id="newClass">+ 반 만들기</button>
+  <span class="grow"></span>
+  <button id="showUrl">학생 접속 주소</button>
+  <button id="csv">CSV 내보내기</button>
+  <button id="boardBtn">큰 화면</button>
+  <label class="row muted" style="gap:4px"><input type="checkbox" id="mask"> 이름 가리기</label>
+</div></header>
+<main class="wrap wide" id="app"><p class="muted">불러오는 중…</p></main>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js" defer></script>
+<script type="module" src="teacher.js"></script>
+</body>
+</html>

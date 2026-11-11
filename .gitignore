@@ -1,0 +1,5 @@
+# 개인정보·키: 교사 PC에만 보관
+local/
+.env
+*.csv
+node_modules/

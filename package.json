@@ -1,0 +1,11 @@
+{
+  "name": "seosul-practice",
+  "version": "1.0.0",
+  "private": true,
+  "description": "5-2 과학 「열과 우리 생활」 서술형 연습 웹앱 (교사 PC 서버 + GitHub Pages 혼자 연습)",
+  "type": "module",
+  "scripts": {
+    "start": "node server.mjs"
+  },
+  "engines": { "node": ">=18" }
+}
