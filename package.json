@@ -1,11 +1,22 @@
 {
   "name": "seosul-practice",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "private": true,
-  "description": "5-2 과학 「열과 우리 생활」 서술형 연습 웹앱 (교사 PC 서버 + GitHub Pages 혼자 연습)",
+  "description": "5-2 과학 「열과 우리 생활」 서술형 연습 웹앱 (Netlify + Firebase + Gemini)",
   "type": "module",
   "scripts": {
-    "start": "node server.mjs"
+    "build": "node scripts/build-config.mjs",
+    "dev": "netlify dev",
+    "emulators": "firebase emulators:start --only auth,firestore --project demo-seosul",
+    "seed": "node scripts/seed-emulator.mjs",
+    "test": "firebase emulators:exec --only firestore --project demo-seosul-rules \"node --test tests/firestore.rules.test.mjs\""
   },
-  "engines": { "node": ">=18" }
+  "engines": {
+    "node": ">=20"
+  },
+  "devDependencies": {
+    "@firebase/rules-unit-testing": "^4.0.1",
+    "firebase": "^11.10.0",
+    "firebase-tools": "^14.27.0"
+  }
 }

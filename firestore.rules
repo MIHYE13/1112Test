@@ -1,0 +1,102 @@
+rules_version = '2';
+// 서술형 연습 웹앱 v2 보안 규칙 — 1단계: 교사 허용 목록, 반 만들기, 반 코드 참여(번호·모둠 직접 입력), 모둠 고치기
+// 설계: develop.md 5장. 규칙을 바꾸면 tests/firestore.rules.test.mjs 도 함께 고칩니다.
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() { return request.auth != null; }
+    function isTeacher() {
+      return signedIn()
+        && request.auth.token.firebase.sign_in_provider == 'google.com'
+        && request.auth.token.email_verified == true
+        && exists(/databases/$(database)/documents/config/access)
+        && request.auth.token.email in get(/databases/$(database)/documents/config/access).data.teacherEmails;
+    }
+    function classData(classId) { return get(/databases/$(database)/documents/classes/$(classId)).data; }
+    function owns(classId) { return isTeacher() && classData(classId).ownerUid == request.auth.uid; }
+    function isInt(v, lo, hi) { return v is int && v >= lo && v <= hi; }
+
+    // 교사 허용 목록: 콘솔 또는 관리 도구로만 씀. 교사만 읽을 수 있음(교사 확인용)
+    match /config/access {
+      allow read: if isTeacher();
+      allow write: if false;
+    }
+
+    // 반 코드 → 반 ID
+    match /classCodes/{code} {
+      allow get: if signedIn();
+      allow list: if false;
+      allow create: if isTeacher()
+        && code.matches('^[A-HJ-NP-Z2-9]{6}$')
+        && request.resource.data.keys().hasOnly(['classId'])
+        && request.resource.data.classId is string
+        && getAfter(/databases/$(database)/documents/classes/$(request.resource.data.classId)).data.ownerUid == request.auth.uid
+        && getAfter(/databases/$(database)/documents/classes/$(request.resource.data.classId)).data.code == code;
+      allow update: if false;
+      allow delete: if owns(resource.data.classId);
+    }
+
+    match /classes/{classId} {
+      function classFieldsOk(d) {
+        return d.keys().hasOnly(['ownerUid', 'name', 'code', 'studentCount', 'groupCount', 'createdAt',
+                                 'mode', 'freeSeconds', 'revealPolicy', 'live', 'revealed', 'feedbackPublish'])
+          && d.name is string && d.name.size() >= 1 && d.name.size() <= 20
+          && isInt(d.studentCount, 1, 40)
+          && isInt(d.groupCount, 1, 6);
+      }
+      allow get: if signedIn();
+      allow list: if isTeacher() && resource.data.ownerUid == request.auth.uid;
+      allow create: if isTeacher()
+        && request.resource.data.keys().hasAll(['ownerUid', 'name', 'code', 'studentCount', 'groupCount', 'createdAt'])
+        && classFieldsOk(request.resource.data)
+        && request.resource.data.ownerUid == request.auth.uid
+        && request.resource.data.createdAt == request.time
+        && existsAfter(/databases/$(database)/documents/classCodes/$(request.resource.data.code))
+        && getAfter(/databases/$(database)/documents/classCodes/$(request.resource.data.code)).data.classId == classId;
+      allow update: if owns(classId)
+        && classFieldsOk(request.resource.data)
+        && !request.resource.data.diff(resource.data).affectedKeys().hasAny(['ownerUid', 'code', 'createdAt']);
+      allow delete: if owns(classId);
+
+      // 번호 자리: 한 번호에는 한 학생만 (중복 참여 방지)
+      match /numbers/{num} {
+        allow get: if signedIn();
+        allow list: if owns(classId);
+        allow create: if signedIn()
+          && num.matches('^[1-9][0-9]?$')
+          && int(num) <= classData(classId).studentCount
+          && request.resource.data.keys().hasOnly(['uid'])
+          && request.resource.data.uid == request.auth.uid
+          && existsAfter(/databases/$(database)/documents/classes/$(classId)/students/$(request.auth.uid));
+        allow update: if false;
+        allow delete: if owns(classId);   // 기기가 바뀐 학생의 번호를 풀어 줄 때
+      }
+
+      // 참여한 학생: 이름은 저장하지 않음(develop.md 11장)
+      match /students/{uid} {
+        allow get: if (signedIn() && request.auth.uid == uid) || owns(classId);
+        allow list: if owns(classId);
+        allow create: if signedIn() && request.auth.uid == uid
+          && request.resource.data.keys().hasOnly(['number', 'group', 'joinedAt', 'lastSeen'])
+          && isInt(request.resource.data.number, 1, classData(classId).studentCount)
+          && isInt(request.resource.data.group, 1, classData(classId).groupCount)   // 학생이 참여할 때 자기 모둠을 고름
+          && request.resource.data.joinedAt == request.time
+          && request.resource.data.lastSeen == request.time
+          && getAfter(/databases/$(database)/documents/classes/$(classId)/numbers/$(string(request.resource.data.number))).data.uid == uid;
+        // 학생: 접속 시각만 / 교사: 모둠 고치기(0 = 미배정, 모둠 수를 줄였을 때)
+        allow update: if (signedIn() && request.auth.uid == uid
+              && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['lastSeen'])
+              && request.resource.data.lastSeen == request.time)
+          || (owns(classId)
+              && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['group'])
+              && isInt(request.resource.data.group, 0, classData(classId).groupCount));
+        allow delete: if owns(classId);
+      }
+    }
+
+    // 그 밖의 모든 문서는 차단
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

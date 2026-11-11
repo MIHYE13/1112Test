@@ -1,0 +1,20 @@
+# Netlify 배포 설정 — GitHub main 브랜치에 push 하면 자동 배포
+[build]
+  command   = "npm run build"        # 환경변수 → public/js/firebase-config.js 생성
+  publish   = "public"               # 학생·교사 화면
+  functions = "netlify/functions"    # 자동채점(Gemini) 서버 함수
+
+[functions]
+  node_bundler   = "esbuild"
+  included_files = ["data/answer-keys.json"]   # 정답 키는 함수 안에서만 사용
+
+[[headers]]
+  for = "/*"
+  [headers.values]
+    X-Content-Type-Options = "nosniff"
+    Referrer-Policy = "strict-origin-when-cross-origin"
+
+[[headers]]
+  for = "/js/firebase-config.js"
+  [headers.values]
+    Cache-Control = "no-store"
