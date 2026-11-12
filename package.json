@@ -6,6 +6,7 @@
   "type": "module",
   "scripts": {
     "build": "node scripts/build-config.mjs",
+    "build:emu": "node scripts/build-config.mjs --emulator",
     "dev": "netlify dev",
     "emulators": "firebase emulators:start --only auth,firestore --project demo-seosul",
     "seed": "node scripts/seed-emulator.mjs",

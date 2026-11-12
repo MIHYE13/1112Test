@@ -120,7 +120,8 @@ classes/{classId}/answers/{uid_qid} { uid, number, qid, texts[], status, started
                                       submittedAt, elapsed, self[] }
 classes/{classId}/grades/{uid_qid}  { subs: [{ score, feedback, source }], total, overall,
                                       kwScore, ai: { model, at, status }, published, publishedAt }
-classes/{classId}/keys/{qid}        정답 공개 시 교사가 복사한 정답 키(학생 읽기 가능)
+answerKeys/{qid}                    정답 키 원본(교사만 읽고 씀) — 교사 화면에서 data/answer-keys.json 을 한 번 올림
+classes/{classId}/keys/{qid}        반별 정답 키 사본. 학생은 정답 공개 문항, 또는 '제출 즉시' 반에서 자기 답 제출 뒤에만 읽음
 classes/{classId}/shows/{showId}    답 보여주기(8장)
   { qid, sub(0=전체 소문항|1~n), scope: "one"|"group"|"all",
     audience: "class"|"ownGroup",   반 전체에게 / 각 모둠은 자기 모둠 답만
@@ -227,8 +228,9 @@ classes/{classId}/shows/{showId}    답 보여주기(8장)
 |---|---|
 | `npm install` | 개발 도구 설치(firebase-tools, 규칙 테스트 라이브러리) |
 | `npm run emulators` | Firebase 에뮬레이터(Auth 9099·Firestore 8085·UI 4000)를 내 PC에서 실행. 실제 데이터에 영향 없음. **Java 21 필요**(설치됨: Microsoft OpenJDK 21) |
-| `npm run seed` | 에뮬레이터에 교사 허용 목록(config/access) 넣기 — `.env`의 `TEACHER_EMAILS`, 없으면 `teacher@example.com` |
-| `npm run build` | `public/js/firebase-config.js` 생성. `.env`에 Firebase 값이 없으면 에뮬레이터용으로 만듦(Netlify가 배포 때 자동 실행) |
+| `npm run seed` | 에뮬레이터에 교사 허용 목록(config/access)과 정답 키(answerKeys) 넣기 — `.env`의 `TEACHER_EMAILS`, 없으면 `teacher@example.com` |
+| `npm run build` | `public/js/firebase-config.js`를 `.env`(실제 Firebase) 값으로 생성(Netlify가 배포 때 자동 실행) |
+| `npm run build:emu` | 같은 파일을 에뮬레이터(`demo-seosul`)용으로 생성 — 내 PC 개발·테스트 때 |
 | `npm run dev` | `netlify dev`: 화면과 함수를 `.env` 값으로 내 PC에서 실행 |
 | `npm test` | 에뮬레이터를 잠시 켜서 보안 규칙 테스트 실행 |
 
@@ -247,7 +249,7 @@ classes/{classId}/shows/{showId}    답 보여주기(8장)
 |---|---|---|
 | 0 | 폴더 구조·develop.md·agent.md | 완료 |
 | 1 | Firebase 연결, 로그인(학생 익명·교사 Google), 반 만들기·반 코드 참여(학생이 번호·모둠 입력), 모둠 고치기, 명렬표(교사 브라우저) | **완료(2026-11-12)** — 규칙 테스트 11개 통과, 에뮬레이터 화면 확인 |
-| 2 | Firestore 데이터·보안 규칙, 학생·교사 화면 이전(실시간 진행, 제한 시간, 정답 공개) | v1 기능이 Firebase로 모두 동작, 규칙 테스트 통과 — **다음 단계** |
+| 2 | 답 저장·보안 규칙(마감 시각 서버 검사), 실시간 진행·자유 연습, 1~5분·연장·마감·자동 제출, 정답 공개·자기 점검, 문항별·반 전체 보기, 낱말 예상 점수, CSV, 큰 화면, 정답 키 | **완료(2026-11-12)** — 규칙 테스트 19개 통과, 에뮬레이터에서 시작→작성→자동 제출→정답 공개→자기 점검·자유 연습 확인 |
 | 3 | Netlify 배포, 환경변수 주입 | 배포 주소에서 학생 2명·교사 1명 동시 테스트 |
 | 4 | 채점: 낱말 규칙 → [피드백] 버튼(개인 Gemini 채점·점수 부여) → [모두 피드백] | 학생 1명 [피드백]으로 점수·피드백이 학생 화면에 도착, 교사 수정 반영 |
 | 5 | 답 보여주기: 1인 / 모둠(반 전체에게·자기 모둠만) / 전체 | 세 범위 모두 학생 화면·큰 화면에 실시간 표시, 끄기 동작 |

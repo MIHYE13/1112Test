@@ -1,5 +1,7 @@
 rules_version = '2';
-// 서술형 연습 웹앱 v2 보안 규칙 — 1단계: 교사 허용 목록, 반 만들기, 반 코드 참여(번호·모둠 직접 입력), 모둠 고치기
+// 서술형 연습 웹앱 v2 보안 규칙
+// 1단계: 교사 허용 목록, 반 만들기, 반 코드 참여(번호·모둠 직접 입력), 모둠 고치기
+// 2단계: 답(마감 시각을 서버 시각으로 검사), 정답 키(공개 조건), 자기 점검
 // 설계: develop.md 5장. 규칙을 바꾸면 tests/firestore.rules.test.mjs 도 함께 고칩니다.
 service cloud.firestore {
   match /databases/{database}/documents {
@@ -20,6 +22,11 @@ service cloud.firestore {
     match /config/access {
       allow read: if isTeacher();
       allow write: if false;
+    }
+
+    // 정답 키 원본(교사만): 교사 화면에서 data/answer-keys.json 을 올림
+    match /answerKeys/{qid} {
+      allow read, write: if isTeacher();
     }
 
     // 반 코드 → 반 ID
@@ -91,6 +98,78 @@ service cloud.firestore {
               && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['group'])
               && isInt(request.resource.data.group, 0, classData(classId).groupCount));
         allow delete: if owns(classId);
+      }
+
+      // ---------- 2단계: 학생 답 ----------
+      function me() { return get(/databases/$(database)/documents/classes/$(classId)/students/$(request.auth.uid)).data; }
+      function isMember() { return signedIn() && exists(/databases/$(database)/documents/classes/$(classId)/students/$(request.auth.uid)); }
+      function textOk(t, i) { return t.size() <= i || (t[i] is string && t[i].size() <= 2000); }
+      function textsOk(t) { return t is list && t.size() <= 6 && textOk(t, 0) && textOk(t, 1) && textOk(t, 2) && textOk(t, 3) && textOk(t, 4) && textOk(t, 5); }
+      // 마감 검사(5초 여유): 실시간 진행은 반의 live, 자유 연습은 답의 seconds 기준
+      function liveOpenFor(c, qid) {
+        return c.live != null && c.live.qid == qid
+          && (c.live.closed == true
+              ? request.time <= c.live.closedAt + duration.value(5, 's')
+              : request.time <= c.live.startedAt + duration.value(c.live.seconds + 5, 's'));
+      }
+      function freeOpen(a) { return a.seconds == 0 || request.time <= a.startedAt + duration.value(a.seconds + 5, 's'); }
+      function inTime(c, a) { return a.mode == 'live' ? liveOpenFor(c, a.qid) : freeOpen(a); }
+
+      match /answers/{aid} {
+        // 문서 ID 가 '내 uid_문항' 이면 아직 없는 문서도 구독 가능(시작 전부터 실시간 대기)
+        allow get: if (signedIn() && aid.split('_')[0] == request.auth.uid) || owns(classId);
+        allow list: if owns(classId);
+        allow create: if isMember()
+          && aid == request.auth.uid + '_' + request.resource.data.qid
+          && request.resource.data.keys().hasOnly(['uid', 'number', 'group', 'qid', 'mode', 'seconds', 'texts', 'status', 'startedAt', 'updatedAt', 'submittedAt', 'self'])
+          && request.resource.data.uid == request.auth.uid
+          && request.resource.data.number == me().number
+          && request.resource.data.group == me().group
+          && request.resource.data.qid in ['p1', 'p2', 'p3', 'p4', 'p5', 'p6', 'p7', 'p8']
+          && textsOk(request.resource.data.texts)
+          && request.resource.data.status == 'draft'
+          && request.resource.data.startedAt == request.time
+          && request.resource.data.updatedAt == request.time
+          && request.resource.data.submittedAt == null
+          && request.resource.data.self == []
+          && (
+            (request.resource.data.mode == 'live' && classData(classId).mode == 'live'
+              && classData(classId).live != null && classData(classId).live.closed == false
+              && request.resource.data.seconds == 0
+              && liveOpenFor(classData(classId), request.resource.data.qid))
+            || (request.resource.data.mode == 'free' && classData(classId).mode == 'free'
+              && request.resource.data.seconds == classData(classId).freeSeconds)
+          );
+        allow update: if
+          // 학생: 작성 중 → 임시 저장 / 제출 / 시간 종료 (마감 안에서만)
+          (signedIn() && resource.data.uid == request.auth.uid && resource.data.status == 'draft'
+            && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['texts', 'status', 'submittedAt', 'updatedAt'])
+            && textsOk(request.resource.data.texts)
+            && request.resource.data.updatedAt == request.time
+            && inTime(classData(classId), resource.data)
+            && (request.resource.data.status == 'draft'
+                ? request.resource.data.submittedAt == null
+                : (request.resource.data.status in ['submitted', 'timeout'] && request.resource.data.submittedAt == request.time)))
+          // 학생: 제출 뒤에는 자기 점검 체크만
+          || (signedIn() && resource.data.uid == request.auth.uid && resource.data.status != 'draft'
+            && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['self'])
+            && request.resource.data.self is list && request.resource.data.self.size() <= 20)
+          // 교사: 마감 뒤 남은 작성 중 답을 시간 종료로 정리
+          || (owns(classId) && resource.data.status == 'draft'
+            && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'submittedAt'])
+            && request.resource.data.status == 'timeout' && request.resource.data.submittedAt == request.time);
+        allow delete: if owns(classId);
+      }
+
+      // 반별 정답 키: 정답이 공개된 문항, 또는 '제출 즉시 공개' 반에서 자기 답을 낸 뒤에만 학생이 읽음
+      match /keys/{qid} {
+        allow get: if owns(classId)
+          || (isMember() && (qid in classData(classId).revealed
+              || (classData(classId).revealPolicy == 'submit'
+                  && exists(/databases/$(database)/documents/classes/$(classId)/answers/$(request.auth.uid + '_' + qid))
+                  && get(/databases/$(database)/documents/classes/$(classId)/answers/$(request.auth.uid + '_' + qid)).data.status != 'draft')));
+        allow list: if owns(classId);
+        allow write: if owns(classId);
       }
     }
 

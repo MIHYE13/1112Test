@@ -19,7 +19,7 @@ if (fs.existsSync(envFile)) {
 }
 
 const env = process.env;
-const useEmulator = env.USE_EMULATOR === '1' || !env.FIREBASE_PROJECT_ID;
+const useEmulator = process.argv.includes('--emulator') || env.USE_EMULATOR === '1' || !env.FIREBASE_PROJECT_ID;
 
 const config = useEmulator
   ? {

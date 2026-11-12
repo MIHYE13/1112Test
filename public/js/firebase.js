@@ -6,7 +6,7 @@ import {
 } from 'https://www.gstatic.com/firebasejs/11.10.0/firebase-auth.js';
 import {
   getFirestore, connectFirestoreEmulator, doc, getDoc, setDoc, updateDoc, deleteDoc,
-  collection, query, where, getDocs, onSnapshot, writeBatch, runTransaction, serverTimestamp,
+  collection, query, where, getDocs, onSnapshot, writeBatch, runTransaction, serverTimestamp, arrayUnion, arrayRemove,
 } from 'https://www.gstatic.com/firebasejs/11.10.0/firebase-firestore.js';
 import cfg from './firebase-config.js';
 
@@ -50,5 +50,5 @@ export const logout = () => signOut(auth);
 
 export {
   doc, getDoc, setDoc, updateDoc, deleteDoc, collection, query, where, getDocs,
-  onSnapshot, writeBatch, runTransaction, serverTimestamp, onAuthStateChanged,
+  onSnapshot, writeBatch, runTransaction, serverTimestamp, arrayUnion, arrayRemove, onAuthStateChanged,
 };

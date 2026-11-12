@@ -1,8 +1,8 @@
-// 1단계 보안 규칙 테스트 — Firestore 에뮬레이터 필요(npm run emulators 또는 firebase emulators:exec)
+// 보안 규칙 테스트(1·2단계) — Firestore 에뮬레이터 필요(npm run emulators 또는 firebase emulators:exec)
 import { test, before, after, beforeEach } from 'node:test';
 import fs from 'node:fs';
 import { initializeTestEnvironment, assertSucceeds, assertFails } from '@firebase/rules-unit-testing';
-import { doc, getDoc, setDoc, updateDoc, deleteDoc, writeBatch, serverTimestamp, collection, getDocs, query, where } from 'firebase/firestore';
+import { doc, getDoc, setDoc, updateDoc, deleteDoc, writeBatch, serverTimestamp, collection, getDocs, query, where, Timestamp } from 'firebase/firestore';
 
 let env;
 const TEACHER = { email: 'teacher@example.com', email_verified: true, firebase: { sign_in_provider: 'google.com' } };
@@ -121,4 +121,98 @@ test('교사는 번호를 풀 수 있고 학생은 못 품', async () => {
   await joinBatch(studentDb('s1'), 's1', 7, 2);
   await assertFails(deleteDoc(doc(studentDb('s1'), 'classes/c1/numbers/7')));
   await assertSucceeds(deleteDoc(doc(teacherDb(), 'classes/c1/numbers/7')));
+});
+
+// ================= 2단계: 답·마감·정답 키 =================
+
+async function setClass(patch) {
+  await env.withSecurityRulesDisabled(ctx => updateDoc(doc(ctx.firestore(), 'classes/c1'), patch));
+}
+const liveFor = (qid, seconds, agoMs = 0, extra = {}) => ({ mode: 'live', live: { qid, seconds, startedAt: Timestamp.fromMillis(Date.now() - agoMs), closed: false, closedAt: null, revealed: false, ...extra } });
+const newAnswer = (uid, qid, mode = 'live', seconds = 0) => ({ uid, number: 7, group: 2, qid, mode, seconds, texts: ['', '', ''], status: 'draft',
+  startedAt: serverTimestamp(), updatedAt: serverTimestamp(), submittedAt: null, self: [] });
+async function joined() { await makeClass(); await joinBatch(studentDb('s1'), 's1', 7, 2); }
+
+test('실시간 진행 중인 문항만 답을 시작할 수 있음', async () => {
+  await joined();
+  const db = studentDb('s1');
+  await assertFails(setDoc(doc(db, 'classes/c1/answers/s1_p2'), newAnswer('s1', 'p2')));      // 진행 전
+  await setClass(liveFor('p2', 60));
+  await assertFails(setDoc(doc(db, 'classes/c1/answers/s1_p3'), newAnswer('s1', 'p3')));      // 다른 문항
+  await assertSucceeds(setDoc(doc(db, 'classes/c1/answers/s1_p2'), newAnswer('s1', 'p2')));
+  await assertFails(setDoc(doc(studentDb('s2'), 'classes/c1/answers/s2_p2'), { ...newAnswer('s2', 'p2'), number: 9 })); // 참여 안 한 학생
+});
+
+test('시간 안에는 제출되고, 마감 뒤에는 서버가 거부함', async () => {
+  await joined();
+  await setClass(liveFor('p2', 60));
+  const db = studentDb('s1');
+  await setDoc(doc(db, 'classes/c1/answers/s1_p2'), newAnswer('s1', 'p2'));
+  await assertSucceeds(updateDoc(doc(db, 'classes/c1/answers/s1_p2'), { texts: ['열은', '', ''], updatedAt: serverTimestamp() }));
+  await setClass({ 'live.startedAt': Timestamp.fromMillis(Date.now() - 70000) }); // 60초 + 5초 여유 지남
+  await assertFails(updateDoc(doc(db, 'classes/c1/answers/s1_p2'), { texts: ['늦은 답', '', ''], status: 'submitted', submittedAt: serverTimestamp(), updatedAt: serverTimestamp() }));
+  // 교사는 남은 작성 중 답을 시간 종료로 정리
+  await assertSucceeds(updateDoc(doc(teacherDb(), 'classes/c1/answers/s1_p2'), { status: 'timeout', submittedAt: serverTimestamp() }));
+});
+
+test('교사가 마감하면 5초 뒤부터 제출 거부', async () => {
+  await joined();
+  await setClass(liveFor('p2', 300));
+  const db = studentDb('s1');
+  await setDoc(doc(db, 'classes/c1/answers/s1_p2'), newAnswer('s1', 'p2'));
+  await setClass({ 'live.closed': true, 'live.closedAt': Timestamp.fromMillis(Date.now() - 10000) });
+  await assertFails(updateDoc(doc(db, 'classes/c1/answers/s1_p2'), { status: 'submitted', submittedAt: serverTimestamp(), updatedAt: serverTimestamp() }));
+});
+
+test('제출 뒤에는 답을 고칠 수 없고 자기 점검만 바꿈', async () => {
+  await joined();
+  await setClass(liveFor('p2', 60));
+  const db = studentDb('s1');
+  await setDoc(doc(db, 'classes/c1/answers/s1_p2'), newAnswer('s1', 'p2'));
+  await assertSucceeds(updateDoc(doc(db, 'classes/c1/answers/s1_p2'), { texts: ['a', 'b', 'c'], status: 'submitted', submittedAt: serverTimestamp(), updatedAt: serverTimestamp() }));
+  await assertFails(updateDoc(doc(db, 'classes/c1/answers/s1_p2'), { texts: ['고침', '', ''], updatedAt: serverTimestamp() }));
+  await assertSucceeds(updateDoc(doc(db, 'classes/c1/answers/s1_p2'), { self: [true, false, true] }));
+});
+
+test('학생은 다른 학생 답을 읽거나 목록을 볼 수 없고, 교사는 볼 수 있음', async () => {
+  await joined();
+  await joinBatch(studentDb('s2'), 's2', 8, 1);
+  await setClass(liveFor('p2', 60));
+  await setDoc(doc(studentDb('s1'), 'classes/c1/answers/s1_p2'), newAnswer('s1', 'p2'));
+  await assertFails(getDoc(doc(studentDb('s2'), 'classes/c1/answers/s1_p2')));
+  await assertFails(getDocs(collection(studentDb('s2'), 'classes/c1/answers')));
+  await assertSucceeds(getDocs(collection(teacherDb(), 'classes/c1/answers')));
+});
+
+test('정답 키: 공개 전에는 못 읽고, 공개 뒤 또는 제출 즉시 공개 반에서 제출 뒤에 읽음', async () => {
+  await joined();
+  await env.withSecurityRulesDisabled(ctx => setDoc(doc(ctx.firestore(), 'classes/c1/keys/p2'), { accept: '', subs: [] }));
+  const db = studentDb('s1');
+  await assertFails(getDoc(doc(db, 'classes/c1/keys/p2')));
+  await setClass({ revealed: ['p2'] });
+  await assertSucceeds(getDoc(doc(db, 'classes/c1/keys/p2')));
+  await setClass({ revealed: [], revealPolicy: 'submit', ...liveFor('p2', 60) });
+  await assertFails(getDoc(doc(db, 'classes/c1/keys/p2')));
+  await setDoc(doc(db, 'classes/c1/answers/s1_p2'), newAnswer('s1', 'p2'));
+  await assertFails(getDoc(doc(db, 'classes/c1/keys/p2')));                 // 아직 작성 중
+  await updateDoc(doc(db, 'classes/c1/answers/s1_p2'), { status: 'submitted', submittedAt: serverTimestamp(), updatedAt: serverTimestamp() });
+  await assertSucceeds(getDoc(doc(db, 'classes/c1/keys/p2')));
+  await assertFails(getDoc(doc(studentDb('s9'), 'classes/c1/keys/p2')));    // 참여하지 않은 사람
+  await assertFails(getDocs(collection(db, 'answerKeys')));                   // 원본 정답 키는 교사만
+});
+
+test('자유 연습: 반의 문항당 시간과 같아야 하고, 그 시간이 지나면 제출 거부', async () => {
+  await joined();
+  await setClass({ mode: 'free', freeSeconds: 60, live: null });
+  const db = studentDb('s1');
+  await assertFails(setDoc(doc(db, 'classes/c1/answers/s1_p5'), newAnswer('s1', 'p5', 'free', 300)));
+  await assertSucceeds(setDoc(doc(db, 'classes/c1/answers/s1_p5'), newAnswer('s1', 'p5', 'free', 60)));
+  await env.withSecurityRulesDisabled(ctx => updateDoc(doc(ctx.firestore(), 'classes/c1/answers/s1_p5'), { startedAt: Timestamp.fromMillis(Date.now() - 70000) }));
+  await assertFails(updateDoc(doc(db, 'classes/c1/answers/s1_p5'), { status: 'submitted', submittedAt: serverTimestamp(), updatedAt: serverTimestamp() }));
+});
+
+test('아직 없는 내 답 문서는 구독(읽기)할 수 있고, 남의 것은 안 됨', async () => {
+  await joined();
+  await assertSucceeds(getDoc(doc(studentDb('s1'), 'classes/c1/answers/s1_p4')));
+  await assertFails(getDoc(doc(studentDb('s2'), 'classes/c1/answers/s1_p4')));
 });
