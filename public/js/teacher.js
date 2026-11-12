@@ -1,6 +1,7 @@
 // 교사 화면
 // 1단계: Google 로그인, 반 만들기(반 코드), 참여 학생, 모둠 수·모둠 고치기, 명렬표(이 브라우저에만)
 // 2단계: 진행(실시간·자유 연습, 1~5분, 연장·마감·정답 공개), 문항별 보기, 반 전체 보기, CSV, 큰 화면, 정답 키
+// 4단계: 자동채점 켜기/끄기, 결과 보기, [피드백]·[모두 피드백], 점수·피드백 고치기, 학생에게 보내기
 import { $, h, store, toast, fmtTime, syncFromServerTime, serverNow, deadlineOf, liveOpen, loadQuestions, QIDS, materialBox, STATUS, statusClass } from './common.js';
 import { kwHits, kwSubScore, kwScore } from './keyword-grade.js';
 import {
@@ -11,6 +12,7 @@ import {
 const app = $('#app');
 const T = {
   user: null, classes: [], classId: store.get('sp2_tclass'), cls: null, students: [], answers: [], qs: [], keys: {},
+  grades: {}, busy: {},
   tab: 'run', qid: 'p1', seconds: 180, view: 0, unsub: [], pending: false,
 };
 const CODE_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // 헷갈리는 0·O·1·I 제외
@@ -87,7 +89,7 @@ async function loadClasses() {
 }
 
 function openClass(id) {
-  T.unsub.forEach(f => f()); T.unsub = []; T.cls = null; T.students = []; T.answers = [];
+  T.unsub.forEach(f => f()); T.unsub = []; T.cls = null; T.students = []; T.answers = []; T.grades = {};
   T.classId = id; store.set('sp2_tclass', id);
   if (!id) return renderNoClass();
   let first = true;
@@ -100,6 +102,9 @@ function openClass(id) {
   }));
   T.unsub.push(onSnapshot(collection(db, 'classes', id, 'students'), s => {
     T.students = s.docs.map(d => ({ uid: d.id, ...d.data() })).sort((a, b) => a.number - b.number); render();
+  }));
+  T.unsub.push(onSnapshot(collection(db, 'classes', id, 'grades'), s => {
+    T.grades = Object.fromEntries(s.docs.map(d => [d.id, d.data()])); render();
   }));
   T.unsub.push(onSnapshot(collection(db, 'classes', id, 'answers'), s => {
     T.answers = s.docs.map(d => ({ id: d.id, ...d.data() })); render();
@@ -130,7 +135,7 @@ function createClassForm() {
         for (let i = 0; i < 5; i++) { code = newCode(); if (!(await tx.get(doc(db, 'classCodes', code))).exists()) break; code = null; }
         if (!code) throw new Error('반 코드를 만들지 못했어요. 다시 눌러 주세요.');
         tx.set(ref, { ownerUid: T.user.uid, name: name.value.trim(), code, studentCount, groupCount, createdAt: serverTimestamp(),
-          mode: 'live', freeSeconds: 180, revealPolicy: 'teacher', live: null, revealed: [], feedbackPublish: 'auto' });
+          mode: 'live', freeSeconds: 180, revealPolicy: 'teacher', live: null, revealed: [], feedbackPublish: 'auto', autoGrade: true });
         tx.set(doc(db, 'classCodes', code), { classId: ref.id });
       });
       T.classId = ref.id; T.tab = 'join'; toast('반을 만들었어요.'); await loadClasses();
@@ -161,7 +166,7 @@ async function startLive(qid, seconds) {
   if (old.length && !confirm(`연습 ${q.no}번에 이미 답이 ${old.length}개 있어요. 지우고 다시 시작할까요?`)) return;
   await act(async () => {
     const batch = writeBatch(db);
-    for (const a of old) batch.delete(doc(db, 'classes', T.cls.id, 'answers', a.id));
+    for (const a of old) for (const col of ['answers', 'grades', 'results']) batch.delete(doc(db, 'classes', T.cls.id, col, a.id));
     batch.update(classRef(), { mode: 'live', live: { qid, seconds, startedAt: serverTimestamp(), closed: false, closedAt: null, revealed: false },
       revealed: arrayRemove(qid) });
     await batch.commit();
@@ -229,6 +234,14 @@ function controlCard(c) {
       h('b', {}, '정답 공개'),
       h('button', { class: c.revealPolicy === 'submit' ? 'sel' : '', onclick: () => setPolicy('submit') }, '제출 즉시'),
       h('button', { class: c.revealPolicy === 'teacher' ? 'sel' : '', onclick: () => setPolicy('teacher') }, '교사가 공개할 때')),
+    h('div', { class: 'row' },
+      h('b', {}, '자동채점(Gemini)'),
+      h('button', { class: c.autoGrade !== false ? 'sel' : '', onclick: () => act(() => updateDoc(classRef(), { autoGrade: true })) }, '제출하면 자동채점'),
+      h('button', { class: c.autoGrade === false ? 'sel' : '', onclick: () => act(() => updateDoc(classRef(), { autoGrade: false })) }, '끄기(교사가 [피드백])'),
+      h('span', { class: 'grow' }),
+      h('b', {}, '결과'),
+      h('button', { class: c.feedbackPublish !== 'review' ? 'sel' : '', onclick: () => act(() => updateDoc(classRef(), { feedbackPublish: 'auto' })) }, '바로 학생에게'),
+      h('button', { class: c.feedbackPublish === 'review' ? 'sel' : '', onclick: () => act(() => updateDoc(classRef(), { feedbackPublish: 'review' })) }, '교사 확인 후 보내기')),
     h('div', { class: 'row' }, h('b', {}, '문항'), h('div', { class: 'qbtns' }, T.qs.map(x => h('button', {
       class: x.id === T.qid ? 'sel' : '', title: x.title, onclick: () => { T.qid = x.id; T.view = 0; render(); } },
       `${x.no}. ${x.title}`, (c.revealed || []).includes(x.id) ? ' ✓' : '')))),
@@ -290,6 +303,86 @@ function kwChips(text, keySub) {
   }));
 }
 
+// ================= 4단계: 채점 =================
+const gradeOf = (uid, qid) => T.grades[`${uid}_${qid}`];
+const gradeTotal = g => g?.subs ? g.subs.reduce((n, s) => n + (Number(s.score) || 0), 0) : null;
+
+async function callGrade(uid, qid) {
+  const k = `${uid}_${qid}`;
+  T.busy[k] = true; render();
+  try {
+    const r = await fetch('/.netlify/functions/grade', { method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + await auth.currentUser.getIdToken() },
+      body: JSON.stringify({ classId: T.cls.id, qid, uid }) });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(j.error || r.status);
+    return true;
+  } catch (e) { toast('채점 실패: ' + e.message); return false; }
+  finally { delete T.busy[k]; render(); }
+}
+
+async function gradeAll(qid) {
+  const todo = T.answers.filter(a => a.qid === qid && !['draft', 'none'].includes(statusOf(a)) && gradeOf(a.uid, qid)?.ai?.status !== 'done');
+  if (!todo.length) return toast('채점할 답이 없어요(모두 채점됨).');
+  toast(`${todo.length}개 채점을 시작해요.`);
+  let i = 0, ok = 0;
+  const worker = async () => { while (i < todo.length) { const a = todo[i++]; if (await callGrade(a.uid, qid)) ok++; } };
+  await Promise.all([worker(), worker(), worker()]);
+  toast(`채점 완료 ${ok}/${todo.length}`);
+}
+
+function resultCopy(g) {
+  return { subs: g.subs.map(x => ({ score: x.score, feedback: x.feedback || '' })), total: gradeTotal(g), overall: g.overall || '', publishedAt: serverTimestamp() };
+}
+
+async function editGrade(uid, qid, i, patch) {
+  const k = `${uid}_${qid}`; const g = T.grades[k]; const q = T.qs.find(x => x.id === qid);
+  const subs = q.subs.map((s, j) => ({ score: g?.subs?.[j]?.score ?? 0, feedback: g?.subs?.[j]?.feedback || '', source: g?.subs?.[j]?.source || 'teacher',
+    ...(j === i ? { ...patch, source: 'teacher' } : {}) }));
+  const ng = { ...(g || {}), subs };
+  const batch = writeBatch(db);
+  batch.set(doc(db, 'classes', T.cls.id, 'grades', k), { subs, total: gradeTotal(ng), uid, qid }, { merge: true });
+  if (g?.published) batch.set(doc(db, 'classes', T.cls.id, 'results', k), resultCopy(ng));
+  await act(() => batch.commit());
+}
+
+async function publishGrades(keys, on) {
+  const list = keys.filter(k => T.grades[k]?.subs);
+  if (!list.length) return toast('보낼 채점 결과가 없어요.');
+  const batch = writeBatch(db);
+  for (const k of list) {
+    batch.set(doc(db, 'classes', T.cls.id, 'grades', k), { published: on }, { merge: true });
+    if (on) batch.set(doc(db, 'classes', T.cls.id, 'results', k), resultCopy(T.grades[k]));
+    else batch.delete(doc(db, 'classes', T.cls.id, 'results', k));
+  }
+  await act(() => batch.commit(), on ? `${list.length}명에게 보냈어요.` : '공개를 취소했어요.');
+}
+
+function gradeCell(s, a, q) {
+  const k = `${s.uid}_${q.id}`; const g = T.grades[k]; const st = statusOf(a);
+  if (!a || st === 'draft' || st === 'none') return h('td', { class: 'center muted' }, '');
+  const busy = T.busy[k];
+  const total = gradeTotal(g);
+  return h('td', { class: 'center', style: 'min-width:9em' },
+    total !== null ? h('div', { class: 'status-line' }, `${total}/${q.total}점`) : h('div', { class: 'muted' }, g?.ai?.status === 'error' ? '채점 오류' : '미채점'),
+    g?.overall ? h('div', { class: 'muted', style: 'font-size:.85em;text-align:left' }, g.overall) : null,
+    h('div', { class: 'row', style: 'justify-content:center;gap:4px;margin-top:4px' },
+      h('button', { disabled: busy, onclick: () => callGrade(s.uid, q.id) }, busy ? '채점 중…' : (g?.subs ? '다시 피드백' : '피드백')),
+      g?.subs ? h('button', { class: g.published ? 'sel' : '', onclick: () => publishGrades([k], !g.published) }, g.published ? '공개됨' : '보내기') : null));
+}
+
+function subGrade(s, a, q, i) {
+  const g = gradeOf(s.uid, q.id); if (!g?.subs) return null;
+  const sg = g.subs[i] || {}; const pts = q.subs[i].points;
+  let tmo;
+  return h('div', { class: 'grade' },
+    h('select', { 'aria-label': '점수', onchange: e => editGrade(s.uid, q.id, i, { score: Number(e.target.value) }) },
+      Array.from({ length: pts + 1 }, (_, n) => h('option', { value: n, selected: Number(sg.score) === n }, `${n}점`))),
+    h('input', { value: sg.feedback || '', title: sg.source === 'teacher' ? '교사가 고침' : 'AI 피드백', placeholder: '피드백',
+      oninput: e => { clearTimeout(tmo); tmo = setTimeout(() => editGrade(s.uid, q.id, i, { feedback: e.target.value.slice(0, 300) }), 700); } }),
+    sg.source === 'teacher' ? h('span', { class: 'tag', title: '교사가 고친 점수' }, '교사') : null);
+}
+
 // 진행·문항별 보기
 function runView(c) {
   const q = T.qs.find(x => x.id === T.qid); const key = T.keys[T.qid];
@@ -298,9 +391,11 @@ function runView(c) {
     h('button', { onclick: async () => {
       const list = T.answers.filter(a => a.qid === q.id);
       if (!list.length || !confirm(`${c.name} 연습 ${q.no}번 답 ${list.length}개를 모두 지울까요? 되돌릴 수 없어요.`)) return;
-      const batch = writeBatch(db); for (const a of list) batch.delete(doc(db, 'classes', c.id, 'answers', a.id));
+      const batch = writeBatch(db); for (const a of list) for (const col of ['answers', 'grades', 'results']) batch.delete(doc(db, 'classes', c.id, col, a.id));
       await act(() => batch.commit(), '지웠어요.');
-    } }, '이 문항 답 지우기'));
+    } }, '이 문항 답 지우기'),
+    h('button', { class: 'primary', onclick: () => gradeAll(q.id) }, '모두 피드백(미채점)'),
+    h('button', { onclick: () => publishGrades(Object.keys(T.grades).filter(k => k.endsWith('_' + q.id) && !T.grades[k].published), true) }, '채점 결과 모두 보내기'));
   const det = h('details', {}, h('summary', {}, '자료·예시 답안 보기'), materialBox(q),
     q.subs.map((s, i) => h('p', {}, h('b', {}, `(${s.no}) ${s.prompt} [${s.points}점]`), h('br'), key?.subs[i]?.answer || '')),
     key ? h('p', { class: 'muted' }, '인정 범위: ' + key.accept) : null);
@@ -317,7 +412,7 @@ function runView(c) {
           t || h('span', { class: 'muted' }, a ? '(빈칸)' : ''), a ? kwChips(t, key?.subs[i]) : null); })));
   } else {
     content = h('div', { class: 'tablewrap' }, h('table', { class: 'ans' },
-      h('thead', {}, h('tr', {}, h('th', {}, '학생'), h('th', {}, '상태'), q.subs.map(s => h('th', {}, `(${s.no}) ${s.points}점`)), h('th', { title: '핵심 낱말 일치로 계산한 참고 점수' }, `낱말 예상/${q.total}`))),
+      h('thead', {}, h('tr', {}, h('th', {}, '학생'), h('th', {}, '상태'), q.subs.map(s => h('th', {}, `(${s.no}) ${s.points}점`)), h('th', {}, `채점/${q.total}`), h('th', { title: '핵심 낱말 일치로 계산한 참고 점수' }, '낱말 예상'))),
       h('tbody', {}, sts.map(s => {
         const a = ansOf(s.uid, q.id); const st = statusOf(a);
         const el = a?.submittedAt?.toMillis && a.startedAt?.toMillis ? fmtTime((a.submittedAt.toMillis() - a.startedAt.toMillis()) / 1000) : '';
@@ -325,8 +420,9 @@ function runView(c) {
           h('td', {}, `${s.group || '-'}모둠`, h('br'), nameOf(s.number)),
           h('td', { class: 'center' }, h('span', { class: 'tag ' + statusClass(st) }, STATUS[st]), el ? h('div', { class: 'muted' }, el) : null,
             a?.self?.length && key ? h('div', { class: 'muted', title: '학생 스스로 점검' }, '자기점검 ' + key.subs.flatMap(x => x.rubric).reduce((n, r, k) => n + (a.self[k] ? r.points : 0), 0)) : null),
-          q.subs.map((sub, i) => h('td', { class: 'txt' }, a?.texts?.[i] || h('span', { class: 'muted' }, a ? '(빈칸)' : ''), a ? kwChips(a.texts[i], key?.subs[i]) : null)),
-          h('td', { class: 'center' }, a && key ? kwScore(a.texts, key) : ''));
+          q.subs.map((sub, i) => h('td', { class: 'txt' }, a?.texts?.[i] || h('span', { class: 'muted' }, a ? '(빈칸)' : ''), a ? kwChips(a.texts[i], key?.subs[i]) : null, a ? subGrade(s, a, q, i) : null)),
+          gradeCell(s, a, q),
+          h('td', { class: 'center muted' }, a && key ? kwScore(a.texts, key) : ''));
       }))));
   }
   return h('div', {}, controlCard(c), head, det, views, content);
@@ -336,28 +432,29 @@ function runView(c) {
 function allView(c) {
   if (!T.students.length) return h('p', { class: 'muted' }, '아직 참여한 학생이 없어요.');
   return h('div', { class: 'tablewrap' }, h('table', { class: 'ans matrix' },
-    h('thead', {}, h('tr', {}, h('th', {}, '학생'), T.qs.map(q => h('th', { title: q.title }, `${q.no}번`)), h('th', {}, '제출'), h('th', { title: '핵심 낱말 일치 참고 점수 합' }, '낱말 예상 합'))),
+    h('thead', {}, h('tr', {}, h('th', {}, '학생'), T.qs.map(q => h('th', { title: q.title }, `${q.no}번`)), h('th', {}, '제출'), h('th', {}, '채점 합'))),
     h('tbody', {}, T.students.map(s => {
       let n = 0, tot = 0;
       return h('tr', {}, h('td', { style: 'text-align:left' }, `${s.group || '-'}모둠 · ${nameOf(s.number)}`), T.qs.map(q => {
-        const a = ansOf(s.uid, q.id); const st = statusOf(a); const sc = a && T.keys[q.id] ? kwScore(a.texts, T.keys[q.id]) : null;
+        const a = ansOf(s.uid, q.id); const st = statusOf(a); const sc = gradeTotal(gradeOf(s.uid, q.id));
         if (st === 'submitted' || st === 'timeout') n++; if (sc !== null) tot += sc;
         return h('td', { style: 'cursor:pointer', onclick: () => { T.qid = q.id; T.tab = 'run'; render(); } },
           a ? h('span', { class: 'tag ' + statusClass(st) }, STATUS[st]) : '·', sc !== null ? h('div', { class: 'muted' }, `${sc}점`) : null);
       }), h('td', {}, `${n}/${T.qs.length}`), h('td', {}, tot));
     }))),
-    h('p', { class: 'muted' }, '칸을 누르면 그 문항의 답을 볼 수 있어요. 점수는 핵심 낱말 일치로 계산한 참고값이에요(정식 채점은 4단계 [피드백]).'));
+    h('p', { class: 'muted' }, '칸을 누르면 그 문항의 답과 채점 결과를 볼 수 있어요. 점수는 자동채점(교사가 고친 점수 포함) 결과예요.'));
 }
 
 // CSV (교사 브라우저에서 만들어 내려받음 — 이름은 이 브라우저의 명렬표에서)
 function exportCsv() {
   const c = T.cls; if (!c) return;
   const esc = v => `"${String(v ?? '').replace(/"/g, '""')}"`;
-  const rows = [['반', '번호', '이름', '모둠', '문항', '문항 제목', '소문항', '배점', '답', '낱말 예상 점수', '상태', '걸린 시간(초)', '제출 시각']];
+  const rows = [['반', '번호', '이름', '모둠', '문항', '문항 제목', '소문항', '배점', '답', '채점 점수', '피드백', '낱말 예상 점수', '상태', '걸린 시간(초)', '제출 시각']];
   for (const s of T.students) for (const q of T.qs) {
     const a = ansOf(s.uid, q.id); if (!a) continue;
     const el = a.submittedAt?.toMillis && a.startedAt?.toMillis ? Math.round((a.submittedAt.toMillis() - a.startedAt.toMillis()) / 1000) : '';
     q.subs.forEach((sb, i) => rows.push([c.name, s.number, roster()[s.number] || '', s.group || '', q.no, q.title, `(${sb.no})`, sb.points, a.texts?.[i],
+      gradeOf(s.uid, q.id)?.subs?.[i]?.score ?? '', gradeOf(s.uid, q.id)?.subs?.[i]?.feedback ?? '',
       T.keys[q.id] ? kwSubScore(a.texts?.[i], T.keys[q.id].subs[i]) : '', STATUS[statusOf(a)], el, a.submittedAt?.toDate ? a.submittedAt.toDate().toLocaleString('ko-KR') : '']));
   }
   const blob = new Blob(['﻿' + rows.map(r => r.map(esc).join(',')).join('\r\n')], { type: 'text/csv;charset=utf-8' });

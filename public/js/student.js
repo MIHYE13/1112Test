@@ -1,14 +1,15 @@
 // 학생 화면
 // 1단계: 익명 로그인, 반 고르기(목록 또는 링크) → 번호·모둠 직접 입력 후 시작
 // 2단계: 실시간 진행·자유 연습, 제한 시간·자동 제출, 정답 공개·자기 점검
-// (점수·피드백은 4단계, 친구 답 보기는 5단계에서 이어 붙입니다)
+// 4단계: 제출하면 자동채점(서버 함수 → Gemini) 후 점수·피드백 표시
+// (친구 답 보기는 5단계에서 이어 붙입니다)
 import { $, h, store, toast, fmtTime, syncFromServerTime, serverNow, deadlineOf, liveOpen, loadQuestions, QIDS, materialBox, STATUS, statusClass, timerView } from './common.js';
-import { db, studentSignIn, doc, getDoc, setDoc, updateDoc, onSnapshot, writeBatch, serverTimestamp, collection, getDocs } from './firebase.js';
+import { auth, db, studentSignIn, doc, getDoc, setDoc, updateDoc, onSnapshot, writeBatch, serverTimestamp, collection, getDocs } from './firebase.js';
 
 const app = $('#app');
-const S = { user: null, classId: store.get('sp2_class'), cls: null, me: null, unsub: [], qs: [], ans: {}, keys: {}, cur: null, timers: [], synced: false };
+const S = { user: null, classId: store.get('sp2_class'), cls: null, me: null, unsub: [], qs: [], ans: {}, res: {}, grading: {}, keys: {}, cur: null, timers: [], synced: false };
 
-function cleanup() { S.unsub.forEach(f => f()); S.unsub = []; clearTimers(); S.cur = null; S.ans = {}; S.keys = {}; }
+function cleanup() { S.unsub.forEach(f => f()); S.unsub = []; clearTimers(); S.cur = null; S.ans = {}; S.res = {}; S.keys = {}; }
 function clearTimers() { S.timers.forEach(clearInterval); S.timers = []; }
 const ansRef = qid => doc(db, 'classes', S.classId, 'answers', `${S.user.uid}_${qid}`);
 
@@ -100,6 +101,10 @@ function enter() {
       const prev = S.ans[qid]; S.ans[qid] = snap.exists() ? snap.data() : null;
       if (S.cur?.qid === qid) onMyAnswerChange(prev); else if (!S.cur) route();
     }, () => {}));
+    S.unsub.push(onSnapshot(doc(db, 'classes', S.classId, 'results', `${S.user.uid}_${qid}`), snap => {
+      S.res[qid] = snap.exists() ? snap.data() : null;
+      if (S.cur?.qid === qid) renderQuestionKeepText(); else if (!S.cur) route();
+    }, () => {}));
   }
 }
 
@@ -152,7 +157,8 @@ function qlist(list) {
     const st = S.ans[q.id]?.status;
     return h('button', { class: 'qitem', onclick: () => openQuestion(q.id) },
       h('b', {}, `연습 ${q.no}. ${q.title}`), h('span', { class: 'tag concept' }, q.concept), ' ',
-      st ? h('span', { class: 'tag ' + statusClass(st) }, STATUS[st]) : null);
+      st ? h('span', { class: 'tag ' + statusClass(st) }, STATUS[st]) : null,
+      S.res[q.id] ? h('span', { class: 'tag ok' }, ` ${S.res[q.id].total}/${q.total}점`) : null);
   }));
 }
 
@@ -235,6 +241,20 @@ async function renderQuestion(keep) {
         a.submittedAt?.toMillis && a.startedAt?.toMillis ? ` · 걸린 시간 ${fmtTime((a.submittedAt.toMillis() - a.startedAt.toMillis()) / 1000)}` : '',
         key ? '' : h('span', { class: 'muted' }, ' · 선생님이 정답을 공개하면 아래에 나타나요.'))
     : !editable ? h('p', { class: 'muted' }, '시간이 끝났어요.') : null;
+  const res = S.res[qid];
+  let resultCard = null;
+  if (a && a.status !== 'draft') {
+    if (res) resultCard = h('div', { class: 'card', style: 'border:2px solid var(--ok)' },
+      h('h2', {}, `채점 결과 ${res.total} / ${q.total}점`),
+      q.subs.map((s, i) => h('p', {}, h('b', {}, `(${s.no}) ${res.subs?.[i]?.score ?? '-'} / ${s.points}점 `), res.subs?.[i]?.feedback || '')),
+      res.overall ? h('p', { class: 'status-line' }, '💬 ' + res.overall) : null);
+    else {
+      const auto = c.autoGrade !== false;
+      if (auto && !S.grading[qid]) requestGrade(qid);
+      resultCard = h('p', { class: 'muted' }, !auto ? '선생님이 피드백을 보내면 여기에 나타나요.'
+        : S.grading[qid] === 'error' ? '채점 결과를 아직 받지 못했어요. 선생님이 확인 중이에요.' : '⏳ 채점 결과를 기다리는 중이에요…');
+    }
+  }
   let selfTotal = null;
   if (key && a && a.status !== 'draft') {
     const rub = key.subs.flatMap(s => s.rubric);
@@ -246,6 +266,7 @@ async function renderQuestion(keep) {
     h('div', { class: 'card' },
       h('div', { class: 'qhead' }, h('div', {}, h('h1', {}, `연습 ${q.no}. ${q.title}`), h('span', { class: 'tag concept' }, '핵심 개념: ' + q.concept)), timer),
       materialBox(q), msg, ...subs, selfTotal),
+    resultCard,
     h('div', { class: 'actions' },
       liveHere && a?.status === 'draft' ? null : h('button', { class: 'ghost', onclick: () => { saveDraft(); clearTimers(); S.cur = null; renderHome(); } }, '← 문항 목록'),
       editable ? h('button', { class: 'primary big', onclick: () => submit(false) }, '제출하기') : null));
@@ -270,10 +291,25 @@ async function submit(timeout) {
   S.cur.submitting = true;
   try {
     await updateDoc(ansRef(S.cur.qid), { texts: texts(), status: timeout ? 'timeout' : 'submitted', submittedAt: serverTimestamp(), updatedAt: serverTimestamp() });
-    toast(timeout ? '시간이 끝나 자동으로 제출했어요.' : '제출했어요!');
+    const auto = S.cls?.autoGrade !== false;
+    toast(timeout ? '시간이 끝나 자동으로 제출했어요.' : auto ? '제출했어요! 채점 중이에요.' : '제출했어요!');
+    if (auto) requestGrade(S.cur.qid);
   } catch {
     toast(timeout ? '시간이 지나 제출되지 않았어요. 선생님께 말씀하세요.' : '제출하지 못했어요. 다시 눌러 주세요.');
   } finally { if (S.cur) S.cur.submitting = false; }
+}
+
+// 자동채점 요청: 서버 함수가 Gemini로 채점하고 결과를 저장(공개되면 results 문서로 실시간 도착)
+async function requestGrade(qid) {
+  if (S.grading[qid] === 'busy' || S.grading[qid] === 'done') return;
+  S.grading[qid] = 'busy';
+  try {
+    const r = await fetch('/.netlify/functions/grade', { method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + await auth.currentUser.getIdToken() },
+      body: JSON.stringify({ classId: S.classId, qid }) });
+    S.grading[qid] = r.ok ? 'done' : 'error';
+  } catch { S.grading[qid] = 'error'; }
+  if (S.cur?.qid === qid && !S.res[qid]) renderQuestionKeepText();
 }
 
 async function selfCheck(idx, on) {

@@ -19,3 +19,6 @@ ui-debug.log
 
 # 이전 버전(교사 PC 서버) 개인정보 폴더
 local/
+
+# netlify dev 가 만드는 파일
+deno.lock

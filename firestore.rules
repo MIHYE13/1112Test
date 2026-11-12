@@ -2,6 +2,7 @@ rules_version = '2';
 // 서술형 연습 웹앱 v2 보안 규칙
 // 1단계: 교사 허용 목록, 반 만들기, 반 코드 참여(번호·모둠 직접 입력), 모둠 고치기
 // 2단계: 답(마감 시각을 서버 시각으로 검사), 정답 키(공개 조건), 자기 점검
+// 4단계: 채점 원본(grades, 교사만)과 공개 사본(results, 학생 자기 것)
 // 설계: develop.md 5장. 규칙을 바꾸면 tests/firestore.rules.test.mjs 도 함께 고칩니다.
 service cloud.firestore {
   match /databases/{database}/documents {
@@ -46,7 +47,7 @@ service cloud.firestore {
     match /classes/{classId} {
       function classFieldsOk(d) {
         return d.keys().hasOnly(['ownerUid', 'name', 'code', 'studentCount', 'groupCount', 'createdAt',
-                                 'mode', 'freeSeconds', 'revealPolicy', 'live', 'revealed', 'feedbackPublish'])
+                                 'mode', 'freeSeconds', 'revealPolicy', 'live', 'revealed', 'feedbackPublish', 'autoGrade'])
           && d.name is string && d.name.size() >= 1 && d.name.size() <= 20
           && isInt(d.studentCount, 1, 40)
           && isInt(d.groupCount, 1, 6);
@@ -169,6 +170,19 @@ service cloud.firestore {
               || (classData(classId).revealPolicy == 'submit'
                   && exists(/databases/$(database)/documents/classes/$(classId)/answers/$(request.auth.uid + '_' + qid))
                   && get(/databases/$(database)/documents/classes/$(classId)/answers/$(request.auth.uid + '_' + qid)).data.status != 'draft')));
+        allow list: if owns(classId);
+        allow write: if owns(classId);
+      }
+
+      // ---------- 4단계: 채점 ----------
+      // grades: 채점 원본(교사만). AI 채점은 서버 함수(Admin SDK)가 씀
+      match /grades/{gid} {
+        allow read: if owns(classId);
+        allow write: if owns(classId);
+      }
+      // results: 학생에게 공개한 점수·피드백 사본. 자기 것만 읽음(아직 없어도 구독 가능)
+      match /results/{rid} {
+        allow get: if owns(classId) || (signedIn() && rid.split('_')[0] == request.auth.uid);
         allow list: if owns(classId);
         allow write: if owns(classId);
       }

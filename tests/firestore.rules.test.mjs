@@ -222,3 +222,19 @@ test('학생은 반 목록을 볼 수 있음(반 코드 없이 반 고르기)', 
   await assertSucceeds(getDocs(collection(studentDb('s1'), 'classes')));
   await assertFails(getDocs(collection(env.unauthenticatedContext().firestore(), 'classes')));
 });
+
+test('채점: 원본은 교사만, 공개 사본은 자기 것만 읽고 아무도 학생이 쓰지 못함', async () => {
+  await joined();
+  await env.withSecurityRulesDisabled(async ctx => {
+    await setDoc(doc(ctx.firestore(), 'classes/c1/grades/s1_p2'), { total: 7, published: false });
+    await setDoc(doc(ctx.firestore(), 'classes/c1/results/s1_p2'), { total: 7 });
+  });
+  await assertFails(getDoc(doc(studentDb('s1'), 'classes/c1/grades/s1_p2')));
+  await assertSucceeds(getDoc(doc(studentDb('s1'), 'classes/c1/results/s1_p2')));
+  await assertSucceeds(getDoc(doc(studentDb('s1'), 'classes/c1/results/s1_p9')));   // 아직 없는 내 결과 구독
+  await assertFails(getDoc(doc(studentDb('s2'), 'classes/c1/results/s1_p2')));
+  await assertFails(setDoc(doc(studentDb('s1'), 'classes/c1/results/s1_p2'), { total: 10 }));
+  await assertFails(setDoc(doc(studentDb('s1'), 'classes/c1/grades/s1_p2'), { total: 10 }));
+  await assertSucceeds(updateDoc(doc(teacherDb(), 'classes/c1/grades/s1_p2'), { total: 8 }));
+  await assertSucceeds(setDoc(doc(teacherDb(), 'classes/c1/results/s1_p2'), { total: 8 }));
+});
