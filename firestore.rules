@@ -52,7 +52,8 @@ service cloud.firestore {
           && isInt(d.groupCount, 1, 6);
       }
       allow get: if signedIn();
-      allow list: if isTeacher() && resource.data.ownerUid == request.auth.uid;
+      // 학생이 첫 화면에서 반을 고를 수 있도록 로그인한 사용자는 반 목록을 볼 수 있음(반 이름·진행 상태만 있고 개인정보 없음)
+      allow list: if signedIn();
       allow create: if isTeacher()
         && request.resource.data.keys().hasAll(['ownerUid', 'name', 'code', 'studentCount', 'groupCount', 'createdAt'])
         && classFieldsOk(request.resource.data)

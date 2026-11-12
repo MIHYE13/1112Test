@@ -1,9 +1,9 @@
 // 학생 화면
-// 1단계: 익명 로그인, 반 코드 → 번호·모둠 직접 입력 후 시작
+// 1단계: 익명 로그인, 반 고르기(목록 또는 링크) → 번호·모둠 직접 입력 후 시작
 // 2단계: 실시간 진행·자유 연습, 제한 시간·자동 제출, 정답 공개·자기 점검
 // (점수·피드백은 4단계, 친구 답 보기는 5단계에서 이어 붙입니다)
 import { $, h, store, toast, fmtTime, syncFromServerTime, serverNow, deadlineOf, liveOpen, loadQuestions, QIDS, materialBox, STATUS, statusClass, timerView } from './common.js';
-import { db, studentSignIn, doc, getDoc, setDoc, updateDoc, onSnapshot, writeBatch, serverTimestamp } from './firebase.js';
+import { db, studentSignIn, doc, getDoc, setDoc, updateDoc, onSnapshot, writeBatch, serverTimestamp, collection, getDocs } from './firebase.js';
 
 const app = $('#app');
 const S = { user: null, classId: store.get('sp2_class'), cls: null, me: null, unsub: [], qs: [], ans: {}, keys: {}, cur: null, timers: [], synced: false };
@@ -13,33 +13,26 @@ function clearTimers() { S.timers.forEach(clearInterval); S.timers = []; }
 const ansRef = qid => doc(db, 'classes', S.classId, 'answers', `${S.user.uid}_${qid}`);
 
 // ================= 참여 =================
-// 1) 반 코드 입력 → 2) 번호와 모둠 입력 → 참여
-function renderJoin(msg) {
+// 1) 반 고르기(목록 버튼, 또는 선생님이 준 링크 ?c=반) → 2) 번호와 모둠 입력 → 참여
+async function renderJoin(msg) {
   cleanup();
   $('#who').textContent = ''; $('#leave').hidden = true;
-  const code = h('input', { maxlength: 6, placeholder: '예: K7P2QX', autocomplete: 'off', autocapitalize: 'characters',
-    style: 'text-transform:uppercase;letter-spacing:.15em;font-size:1.3em', required: true });
-  const err = h('p', { style: 'color:var(--bad)' }, msg || '');
-  const btn = h('button', { class: 'primary big', type: 'submit' }, '다음');
-  app.replaceChildren(h('form', { class: 'card', onsubmit: async e => {
-    e.preventDefault(); err.textContent = ''; btn.disabled = true;
-    try { const found = await findClass(code.value.trim().toUpperCase()); renderNumberGroup(found); }
-    catch (x) { err.textContent = x.message; btn.disabled = false; }
-  } },
+  const direct = new URLSearchParams(location.search).get('c');
+  if (direct && !msg) {
+    const snap = await getDoc(doc(db, 'classes', direct)).catch(() => null);
+    if (snap?.exists()) return renderNumberGroup({ classId: direct, cls: snap.data() });
+  }
+  let classes = [];
+  try { classes = (await getDocs(collection(db, 'classes'))).docs.map(d => ({ classId: d.id, cls: d.data() })); } catch {}
+  classes.sort((x, y) => x.cls.name.localeCompare(y.cls.name, 'ko', { numeric: true }));
+  app.replaceChildren(h('div', { class: 'card' },
     h('h1', {}, '서술형 연습에 참여하기'),
-    h('p', { class: 'muted' }, '선생님이 알려 준 반 코드를 입력하세요.'),
-    h('label', { class: 'field' }, '반 코드 (6글자)', code),
-    err, btn));
-  code.focus();
-}
-
-async function findClass(code) {
-  if (!/^[A-Z0-9]{6}$/.test(code)) throw new Error('반 코드는 6글자예요.');
-  const codeSnap = await getDoc(doc(db, 'classCodes', code)).catch(() => null);
-  if (!codeSnap?.exists()) throw new Error('반 코드를 찾을 수 없어요. 다시 확인해 주세요.');
-  const classId = codeSnap.data().classId;
-  const cls = (await getDoc(doc(db, 'classes', classId))).data();
-  return { classId, cls };
+    msg ? h('p', { style: 'color:var(--bad)' }, msg) : null,
+    h('p', { class: 'muted' }, '우리 반을 눌러 주세요.'),
+    classes.length
+      ? h('div', { class: 'tbtns' }, classes.map(c => h('button', { class: 'big', onclick: () => renderNumberGroup(c) }, c.cls.name)))
+      : h('p', {}, '아직 열린 반이 없어요. 선생님이 반을 만들 때까지 기다려 주세요.'),
+    h('p', {}, h('button', { class: 'ghost', onclick: () => renderJoin() }, '↻ 목록 새로고침'))));
 }
 
 function renderNumberGroup({ classId, cls }) {
@@ -67,7 +60,7 @@ function renderNumberGroup({ classId, cls }) {
     h('label', { class: 'field' }, '내 번호', num),
     h('div', { class: 'field' }, h('b', {}, '내 모둠'), groupBtns),
     err,
-    h('div', { class: 'row' }, h('button', { type: 'button', class: 'ghost', onclick: () => renderJoin() }, '← 반 코드 다시 입력'), h('span', { class: 'grow' }), btn)));
+    h('div', { class: 'row' }, h('button', { type: 'button', class: 'ghost', onclick: () => { history.replaceState(null, '', location.pathname); renderJoin(); } }, '← 반 다시 고르기'), h('span', { class: 'grow' }), btn)));
   num.focus();
 }
 
@@ -292,7 +285,7 @@ async function selfCheck(idx, on) {
 }
 
 $('#leave').onclick = () => {
-  if (!confirm('이 반에서 나가 다른 반 코드로 참여할까요?')) return;
+  if (!confirm('이 반에서 나가 다른 반으로 참여할까요?')) return;
   cleanup(); store.del('sp2_class'); S.classId = null; renderJoin();
 };
 window.addEventListener('beforeunload', () => { saveDraft(); });

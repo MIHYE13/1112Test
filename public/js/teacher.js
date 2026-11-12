@@ -108,7 +108,7 @@ function openClass(id) {
 
 function renderNoClass() {
   app.replaceChildren(h('div', { class: 'card' }, h('h1', {}, '반을 만들어 주세요'),
-    h('p', { class: 'muted' }, '위쪽의 [+ 반 만들기]를 누르면 반 코드가 만들어져요. 학생은 그 코드로 참여합니다.')),
+    h('p', { class: 'muted' }, '위쪽의 [+ 반 만들기]를 누르세요. 학생은 첫 화면에서 반 이름을 눌러 참여합니다.')),
     ...(keysReady() ? [] : [keysUploadCard()]));
 }
 
@@ -133,7 +133,7 @@ function createClassForm() {
           mode: 'live', freeSeconds: 180, revealPolicy: 'teacher', live: null, revealed: [], feedbackPublish: 'auto' });
         tx.set(doc(db, 'classCodes', code), { classId: ref.id });
       });
-      T.classId = ref.id; T.tab = 'join'; toast(`반을 만들었어요. 반 코드: ${code}`); await loadClasses();
+      T.classId = ref.id; T.tab = 'join'; toast('반을 만들었어요.'); await loadClasses();
     } catch (x) { err.textContent = x.message; }
   } },
     h('h1', {}, '반 만들기'),
@@ -367,12 +367,17 @@ function exportCsv() {
 }
 
 const studentUrl = () => new URL('./', location.href).href;
+const classLink = c => `${studentUrl()}?c=${c.id}`;
 function joinView(c) {
+  const qr = h('div', { id: 'qr' });
+  setTimeout(() => { if (window.QRCode) new window.QRCode(qr, { text: classLink(c), width: 200, height: 200 }); });
   return h('div', { class: 'card board-panel' },
     h('p', { class: 'muted' }, `${c.name} 학생 참여 방법`),
-    h('p', {}, '① 접속 주소'), h('p', {}, h('span', { class: 'urlbox' }, studentUrl())),
-    h('p', {}, '② 반 코드'), h('div', { class: 'time', style: 'letter-spacing:.15em' }, c.code),
-    h('p', {}, '③ 자기 번호와 모둠 입력'),
+    h('p', {}, '① 접속 주소에서 ', h('b', {}, c.name), ' 버튼 누르기'), h('p', {}, h('span', { class: 'urlbox' }, studentUrl())),
+    h('p', {}, '또는 이 반 바로가기 링크·QR (반 고르기 없이 바로 번호 입력)'), h('p', {}, h('span', { class: 'urlbox' }, classLink(c)),
+      ' ', h('button', { onclick: () => navigator.clipboard?.writeText(classLink(c)).then(() => toast('링크를 복사했어요.')) }, '복사')),
+    qr,
+    h('p', {}, '② 자기 번호와 모둠 입력 → 시작하기'),
     h('p', { class: 'muted' }, `지금 ${T.students.length}명 참여 / ${c.studentCount}명`));
 }
 
@@ -403,7 +408,7 @@ async function saveGroupCount(c, groupCount) {
 
 function studentsView(c) {
   return h('div', { class: 'card' },
-    h('p', { class: 'muted' }, '학생은 반 코드와 번호로 참여해요. 다른 기기로 다시 참여해야 하는 학생은 [번호 풀기]를 누른 뒤 다시 참여하게 하세요.'),
+    h('p', { class: 'muted' }, '학생은 반을 고르고 번호·모둠을 입력해 참여해요. 다른 기기로 다시 참여해야 하는 학생은 [번호 풀기]를 누른 뒤 다시 참여하게 하세요.'),
     T.students.length ? h('table', { class: 'ans' },
       h('thead', {}, h('tr', {}, h('th', {}, '학생'), h('th', {}, '모둠'), h('th', {}, '마지막 접속'), h('th', {}, ''))),
       h('tbody', {}, T.students.map(s => h('tr', {},

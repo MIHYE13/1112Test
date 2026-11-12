@@ -216,3 +216,9 @@ test('아직 없는 내 답 문서는 구독(읽기)할 수 있고, 남의 것�
   await assertSucceeds(getDoc(doc(studentDb('s1'), 'classes/c1/answers/s1_p4')));
   await assertFails(getDoc(doc(studentDb('s2'), 'classes/c1/answers/s1_p4')));
 });
+
+test('학생은 반 목록을 볼 수 있음(반 코드 없이 반 고르기)', async () => {
+  await makeClass();
+  await assertSucceeds(getDocs(collection(studentDb('s1'), 'classes')));
+  await assertFails(getDocs(collection(env.unauthenticatedContext().firestore(), 'classes')));
+});
